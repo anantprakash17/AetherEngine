@@ -272,8 +272,8 @@ final class HLSLocalServer: @unchecked Sendable {
     // MARK: - Public state
 
     /// Per-session capability token, first component of every path this server answers.
-    /// The listener binds 0.0.0.0 so an AirPlay receiver can reach it over the LAN (#86), which
-    /// also puts it in front of every other host on that network. The endpoint names are fixed,
+    /// Upstream binds every interface so an AirPlay receiver can reach it over the LAN (#86), which
+    /// puts it in front of every other host on that network (this fork binds loopback only). The endpoint names are fixed,
     /// so without this the ephemeral port is the only thing between a stranger's port scan and
     /// the stream. It costs nothing to carry: playlist URIs are relative, so they resolve under
     /// the prefix on their own, and only the three entry-point accessors below have to name it.
@@ -663,14 +663,9 @@ final class HLSLocalServer: @unchecked Sendable {
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = 0 // kernel picks ephemeral
-        // Bind all interfaces (not just loopback) so an AirPlay receiver can reach the stream over the LAN
-        // via the device's WiFi IP (#86, DrHurt). Local playback still uses 127.0.0.1; the URL host is only
-        // swapped to the LAN IP while external playback is active. Ephemeral port, serves the current stream only.
-        // Audit NET-6 kept this rather than binding loopback until AirPlay engages: the wireless edge reloads
-        // onto a new server, but a readiness-gate swap (`airPlayHostSwapped`) and a held edge re-read after a
-        // reload hand the LAN URL to the server already listening. LAN exposure is bounded instead by the
-        // head deadlines and the loopback reserve in the accept loop.
-        addr.sin_addr.s_addr = inet_addr("0.0.0.0")
+        // Snug: loopback only. Upstream binds all interfaces for AirPlay (#86); Snug has no AirPlay path,
+        // so the stream is not reachable from the LAN. Ephemeral port, serves the current stream only.
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
 
         let bindResult = withUnsafePointer(to: &addr) { ptr -> Int32 in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
