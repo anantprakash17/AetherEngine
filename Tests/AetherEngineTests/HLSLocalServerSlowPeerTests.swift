@@ -57,32 +57,21 @@ struct HLSLocalServerSlowPeerTests {
                 "the second request on an authenticated keep-alive connection was not answered")
     }
 
-    @Test("LAN peers cannot take the slots kept for loopback",
+    @Test("The listener is not reachable on the LAN address (Snug binds loopback only)",
           .enabled(if: HLSLocalServer.localActiveIPAddress() != nil))
-    func lanPeersLeaveLoopbackSlots() async throws {
+    func lanAddressIsRefused() async throws {
         let lanIP = try #require(HLSLocalServer.localActiveIPAddress())
         let server = HLSLocalServer(provider: StubProvider(), unauthenticatedHeadSeconds: 60)
         try server.start()
         defer { server.stop() }
 
-        var held: [Int32] = []
-        defer { held.forEach { close($0) } }
-        for _ in 0 ..< HLSLocalServer.maxConcurrentConnections + 2 {
-            if let fd = Self.connect(port: server.port, host: lanIP) { held.append(fd) }
-        }
-        // Both waits are bounded under the suite's limit only to say which one stalled: CI ran this
-        // test into the limit once (2026-11-08) with nothing to read, and it does not reproduce locally.
-        let lanShareTaken = try await waitFor(upTo: .seconds(50)) {
-            server.activeConnectionCount >= HLSLocalServer.maxNonLoopbackConnections
-        }
-        try #require(lanShareTaken, "\(held.count) LAN connects succeeded, server counts \(server.activeConnectionCount)")
-        #expect(server.activeConnectionCount == HLSLocalServer.maxNonLoopbackConnections)
+        #expect(Self.connect(port: server.port, host: lanIP) == nil, "the server answered on the LAN address")
 
         let fd = try #require(Self.connect(port: server.port, host: "127.0.0.1"))
         defer { close(fd) }
         let path = "/\(server.pathToken)/media.m3u8"
-        #expect(await Self.onOwnThread { Self.requestStatus(fd: fd, path: path, timeoutSeconds: 50) } == 200,
-                "a loopback player was refused while LAN peers held their share (0 = no answer within 50 s); server counts \(server.activeConnectionCount)")
+        #expect(await Self.onOwnThread { Self.requestStatus(fd: fd, path: path) } == 200,
+                "a loopback player was refused")
     }
 
     @Test("The stop line names the port that was released")
