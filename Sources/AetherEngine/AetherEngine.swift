@@ -2823,6 +2823,8 @@ public final class AetherEngine: ObservableObject {
     /// re-anchor and the remembered rendition selection replays (its deselect/reselect busts
     /// AVKit's cached empty .vtt windows). Cancelled on load reset / stop; newer jumps supersede.
     var nativeSubtitleReanchorTask: Task<Void, Never>? = nil
+    /// Retries a native select the empty-rendition gate refused, once the store gets its first cue.
+    var nativeSubtitleCueRetryTask: Task<Void, Never>? = nil
     /// seekTo anchor of the currently running native subtitle readers; nil = no readers running.
     var nativeSubtitleReaderCoverageStart: Double?
     nonisolated static let subtitleReanchorJumpSeconds: Double = 60
@@ -4517,6 +4519,8 @@ public final class AetherEngine: ObservableObject {
         masterFallbackUsed = false
         nativeSubtitleReanchorTask?.cancel()
         nativeSubtitleReanchorTask = nil
+        nativeSubtitleCueRetryTask?.cancel()
+        nativeSubtitleCueRetryTask = nil
         setPendingRecoverySeekTarget(nil)
         nativeSubtitleTrackTable = []
         nativeSubtitleReapplyOrdinal = nil

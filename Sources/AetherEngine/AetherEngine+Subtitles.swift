@@ -2250,6 +2250,7 @@ extension AetherEngine {
             // early when the reader stops making progress (EOF / read-ahead parked) so we never wait the full
             // deadline for content with little remaining.
             var prefilledCues: Int?
+            var prefilledStore: NativeSubtitleCueStore?
             if ordinal < nativeSubtitleTrackTable.count, nativeSubtitleTrackTable[ordinal].needsOCR,
                let store = nativeStore(atOrdinal: ordinal) {
                 // A bitmap rendition is filled by the OCR worker, which this selection may have
@@ -2262,6 +2263,7 @@ extension AetherEngine {
                                + "cues=\(store.cueCount) exit=\(exit) waited=\(waited)ms", category: .engine)
                 guard exit != "superseded" else { return }
                 prefilledCues = store.cueCount
+                prefilledStore = store
             } else if let stores = nativeSubtitleReaderParams?.stores, ordinal < stores.count {
                 let store = stores[ordinal]
                 let target = currentTime + 240.0
@@ -2293,6 +2295,7 @@ extension AetherEngine {
                 let waited = Int(Date().timeIntervalSince(began) * 1000)
                 EngineLog.emit("[AetherEngine] native subtitle pre-fill done: readMax=\(String(format: "%.1f", store.readMaxCueEnd())) target=\(String(format: "%.1f", target)) cues=\(store.cueCount) exit=\(exit) waited=\(waited)ms readersRunning=\(nativeSubtitleReadersTask != nil)", category: .engine)
                 prefilledCues = store.cueCount
+                prefilledStore = store
             }
             // Sodalite#156: never hand AVKit an EMPTY rendition. The comment above says why the
             // pre-fill exists; this is the half that was missing, and without it the pre-fill is
@@ -2313,8 +2316,21 @@ extension AetherEngine {
             if prefilledCues == 0 {
                 EngineLog.emit("[AetherEngine] native subtitle select refused: rendition ordinal=\(ordinal) "
                                + "is empty at the playhead, and AVKit caches what it is handed. "
-                               + "Leaving it deselected; the readers' re-anchor retries once it has cues",
+                               + "Leaving it deselected; retrying once it has cues",
                                category: .engine)
+                // The re-anchor only fires after a far jump, so a first pick on a store that was
+                // still empty stayed unselected for good. Retry once the first cue lands.
+                if let store = prefilledStore {
+                    nativeSubtitleCueRetryTask?.cancel()
+                    nativeSubtitleCueRetryTask = Task { @MainActor [weak self] in
+                        guard await Self.awaitNativeSubtitleCues(in: store), let self,
+                              Self.nativeSubtitleStillWanted(wanted: self.nativeSubtitleReapplyOrdinal, ordinal: ordinal,
+                                                             current: self.currentAVPlayer?.currentItem, item: item)
+                        else { return }
+                        EngineLog.emit("[AetherEngine] native subtitle select: cues arrived for ordinal=\(ordinal), retrying", category: .engine)
+                        self.setNativeSubtitleSelected(track: ordinal)
+                    }
+                }
                 return
             }
             // #15: AVKit attaches the legible renderer to whatever selection is active when the rendering
@@ -2325,6 +2341,13 @@ extension AetherEngine {
             EngineLog.emit("[AetherEngine] native subtitle select: item=\(itemID) opt=\(option.displayName) groupOpts=\(group.options.count) criteriaAuto=\(currentAVPlayer?.appliesMediaSelectionCriteriaAutomatically ?? true) itemIsCurrent=\(currentAVPlayer?.currentItem === item)", category: .engine)
             item.select(nil, in: group)
             try? await Task.sleep(nanoseconds: 100_000_000)
+            // The sleep is a suspension: the viewer may have picked Off or another track meanwhile, and
+            // reselecting this one would undo it (the mirror then reads our own reselect as a pick).
+            guard Self.nativeSubtitleStillWanted(wanted: nativeSubtitleReapplyOrdinal, ordinal: ordinal,
+                                                 current: currentAVPlayer?.currentItem, item: item) else {
+                EngineLog.emit("[AetherEngine] native subtitle select: ordinal=\(ordinal) no longer wanted, skipping reselect", category: .engine)
+                return
+            }
             item.select(option, in: group)
             let after = item.currentMediaSelection.selectedMediaOption(in: group)?.displayName ?? "nil"
             EngineLog.emit("[AetherEngine] native subtitle select done: selected=\(after) itemIsCurrent=\(currentAVPlayer?.currentItem === item)", category: .engine)
@@ -2334,14 +2357,37 @@ extension AetherEngine {
             var retries = 0
             while item.currentMediaSelection.selectedMediaOption(in: group) == nil,
                   retries < 4,
-                  currentAVPlayer?.currentItem === item {
+                  Self.nativeSubtitleStillWanted(wanted: nativeSubtitleReapplyOrdinal, ordinal: ordinal,
+                                                 current: currentAVPlayer?.currentItem, item: item) {
                 retries += 1
                 try? await Task.sleep(nanoseconds: 700_000_000)
+                guard Self.nativeSubtitleStillWanted(wanted: nativeSubtitleReapplyOrdinal, ordinal: ordinal,
+                                                     current: currentAVPlayer?.currentItem, item: item) else { break }
                 item.select(option, in: group)
                 let retried = item.currentMediaSelection.selectedMediaOption(in: group)?.displayName ?? "nil"
                 EngineLog.emit("[AetherEngine] native subtitle select retry #\(retries): selected=\(retried)", category: .engine)
             }
         }
+    }
+
+    /// True while `ordinal` is still the host's last request and `item` is still the player's item: the
+    /// select suspends (pre-fill, a 100 ms deselect gap, a 700 ms retry sleep), and an Off or a different
+    /// pick that lands meanwhile must not be undone by it.
+    nonisolated static func nativeSubtitleStillWanted(wanted: Int?, ordinal: Int,
+                                                      current: AVPlayerItem?, item: AVPlayerItem) -> Bool {
+        wanted == ordinal && current === item
+    }
+
+    /// Waits until `store` holds a cue; false on timeout or cancellation.
+    nonisolated static func awaitNativeSubtitleCues(in store: NativeSubtitleCueStore,
+                                                    timeout: TimeInterval = 60,
+                                                    interval: UInt64 = 500_000_000) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while store.cueCount == 0 {
+            guard Date() < deadline, !Task.isCancelled else { return false }
+            try? await Task.sleep(nanoseconds: interval)
+        }
+        return !Task.isCancelled
     }
 
     /// #88: ordinal of the table entry backing an active track id: embedded ids match
