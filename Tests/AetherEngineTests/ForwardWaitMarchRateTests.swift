@@ -27,8 +27,13 @@ struct ForwardWaitMarchRateTests {
         }
     }
 
-    private func makeCache() -> SegmentCache {
-        SegmentCache(forwardWindow: 60, backwardWindow: 60, retentionBudgetBytes: 512 * 1024 * 1024)
+    private func makeCache(forwardWindow: Int = 60) -> SegmentCache {
+        SegmentCache(forwardWindow: forwardWindow, backwardWindow: 60, retentionBudgetBytes: 512 * 1024 * 1024)
+    }
+
+    /// The producer parks on backpressure the way the pump does (a target it may not write past yet).
+    private func parkProducer(_ cache: SegmentCache) {
+        _ = cache.awaitFetchHighWater(reaching: Int.max, timeout: 0.01)
     }
 
     private func makeProvider(cache: SegmentCache, recorder: Recorder, marchRate: Bool = true,
@@ -54,12 +59,28 @@ struct ForwardWaitMarchRateTests {
         )
     }
 
-    /// Feeds `indices` to the march tracker as completions `slowSegmentSeconds` apart, the last one now.
-    private func recordSlowMarch(_ provider: VideoSegmentProvider, _ indices: ClosedRange<Int>) {
-        let now = Double(DispatchTime.now().uptimeNanoseconds) / 1e9
+    /// Feeds `indices` to the march tracker as completions `slowSegmentSeconds` apart, the last one
+    /// `endingAgo` seconds before now.
+    private func recordSlowMarch(_ provider: VideoSegmentProvider, _ indices: ClosedRange<Int>,
+                                 endingAgo: Double = 0) {
+        let now = Double(DispatchTime.now().uptimeNanoseconds) / 1e9 - endingAgo
         for (k, i) in indices.enumerated() {
             let age = Double(indices.count - 1 - k) * Self.slowSegmentSeconds
             provider.recordMarchStore(index: i, bytes: 34_500_000, time: now - age)
+        }
+    }
+
+    /// A fast link with the default forward window of 10: the producer fills the window at 4 segments
+    /// per second (11...20, no park), then writes one segment per 4 s of playback, each after a park
+    /// (21...30). The last completion is `endingAgo` seconds before now.
+    private func recordFastLinkPacedByPlayback(_ provider: VideoSegmentProvider, endingAgo: Double = 0) {
+        let now = Double(DispatchTime.now().uptimeNanoseconds) / 1e9 - endingAgo
+        let pacedStart = now - 9 * 4.0
+        for (k, i) in (11...20).enumerated() {
+            provider.recordMarchStore(index: i, bytes: 10_000_000, time: pacedStart - 4.0 - Double(9 - k) * 0.25)
+        }
+        for (k, i) in (21...30).enumerated() {
+            provider.recordMarchStore(index: i, bytes: 10_000_000, parkedBefore: true, time: pacedStart + Double(k) * 4.0)
         }
     }
 
@@ -75,7 +96,8 @@ struct ForwardWaitMarchRateTests {
         defer { cache.close() }
         for i in 0...25 { cache.store(index: i, data: Data(repeating: 0xA1, count: 8)) }
         let recorder = Recorder()
-        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0)
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0,
+                                    backpressureWait: 30.0)
         recordSlowMarch(provider, 18...25)
         _ = provider.mediaSegment(at: 25)  // the playhead's request before the seek
 
@@ -84,7 +106,7 @@ struct ForwardWaitMarchRateTests {
 
         #expect(served != nil)
         #expect(recorder.all == [31])
-        #expect(seconds(since: start) < 2.0)
+        #expect(seconds(since: start) < 10.0)  // not the 30 s forward wait
     }
 
     /// The loopback server asks the file fast path first, and that declares the target before
@@ -95,7 +117,8 @@ struct ForwardWaitMarchRateTests {
         defer { cache.close() }
         for i in 0...25 { cache.store(index: i, data: Data(repeating: 0xAA, count: 8)) }
         let recorder = Recorder()
-        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0)
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0,
+                                    backpressureWait: 30.0)
         recordSlowMarch(provider, 18...25)
         _ = provider.mediaSegmentURL(at: 25)
 
@@ -105,7 +128,7 @@ struct ForwardWaitMarchRateTests {
 
         #expect(served != nil)
         #expect(recorder.all == [31])
-        #expect(seconds(since: start) < 2.0)
+        #expect(seconds(since: start) < 10.0)
     }
 
     @Test("the same jump with the fixed window alone (7.50.0) still waits for the march")
@@ -135,7 +158,8 @@ struct ForwardWaitMarchRateTests {
         cache.resetHighWaterForRestart()  // provider-fired restart at 24
         cache.store(index: 24, data: Data(repeating: 0xA4, count: 8))
         let recorder = Recorder()
-        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 24, initialRestartIndex: 24)
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 24, initialRestartIndex: 24,
+                                    backpressureWait: 30.0)
         recordSlowMarch(provider, 13...20)
         provider.recordMarchStore(index: 24, bytes: 34_500_000)
         _ = provider.mediaSegment(at: 24)
@@ -145,7 +169,7 @@ struct ForwardWaitMarchRateTests {
 
         #expect(served != nil)
         #expect(recorder.all == [31])
-        #expect(seconds(since: start) < 2.0)
+        #expect(seconds(since: start) < 10.0)
     }
 
     @Test("a jump onto the segment the slow march is writing waits for it")
@@ -212,7 +236,8 @@ struct ForwardWaitMarchRateTests {
         for i in 0...60 { cache.store(index: i, data: Data(repeating: 0xAB, count: 8)) }
         cache.resetHighWaterForRestart()  // provider-fired restart at 65, nothing sealed from it yet
         let recorder = Recorder()
-        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 65, initialRestartIndex: 65)
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 65, initialRestartIndex: 65,
+                                    backpressureWait: 30.0)
         recordSlowMarch(provider, 53...60)
         _ = provider.mediaSegmentURL(at: 67)
 
@@ -222,7 +247,7 @@ struct ForwardWaitMarchRateTests {
 
         #expect(served != nil)
         #expect(recorder.all == [70])
-        #expect(seconds(since: start) < 2.0)
+        #expect(seconds(since: start) < 10.0)
     }
 
     @Test("the same request with the fixed window alone (7.50.0) is vetoed and rides the march")
@@ -243,7 +268,9 @@ struct ForwardWaitMarchRateTests {
 
     /// the first press of a burst is a lone jump and restarts at
     /// once; every later press within the burst window settles, and only the last one restarts. The
-    /// requests are the device burst's (62, 65, 67, 70, 72), each sooner after the last than the settle.
+    /// requests are the device burst's (62, 65, 67, 70, 72). Each press is sent once the one before
+    /// has declared its target, never on a timer: two presses that swapped under a full parallel run made
+    /// the earlier index a backward jump, which restarts on its own.
     @Test("a burst restarts for its first press and then only for the last target",
           .timeLimit(.minutes(1)))
     func burstRestartsOnlyForTheLastTarget() async throws {
@@ -251,19 +278,26 @@ struct ForwardWaitMarchRateTests {
         defer { cache.close() }
         for i in 0...60 { cache.store(index: i, data: Data(repeating: 0xAD, count: 8)) }
         let recorder = Recorder()
-        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0, settle: 0.4)
+        // The settle outlasts the whole burst, so every later press is still settling when the next arrives.
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0,
+                                    settle: 2.0)
         recordSlowMarch(provider, 53...60)
         _ = provider.mediaSegment(at: 60)
 
         let finished = Recorder()
-        for (k, index) in [62, 65, 67, 70, 72].enumerated() {
+        func press(_ index: Int) {
             Thread.detachNewThread {
-                Thread.sleep(forTimeInterval: Double(k) * 0.08)
                 if provider.mediaSegmentURL(at: index) == nil {
                     _ = provider.mediaSegmentSource(at: index, onSlow: nil)
                 }
                 finished.record(index)
             }
+        }
+        press(62)
+        try await waitFor { finished.all.contains(62) }  // the lone first press has restarted
+        for index in [65, 67, 70, 72] {
+            press(index)
+            try await waitFor { cache.targetIndex == index }
         }
         try await waitFor { finished.all.count == 5 }
 
@@ -276,7 +310,8 @@ struct ForwardWaitMarchRateTests {
         defer { cache.close() }
         for i in 0...25 { cache.store(index: i, data: Data(repeating: 0xAE, count: 8)) }
         let recorder = Recorder()
-        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0, settle: 1.0)
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0,
+                                    backpressureWait: 30.0, settle: 30.0)
         recordSlowMarch(provider, 18...25)
         _ = provider.mediaSegment(at: 25)
 
@@ -285,7 +320,7 @@ struct ForwardWaitMarchRateTests {
 
         #expect(served != nil)
         #expect(recorder.all == [31])
-        #expect(seconds(since: start) < 0.6)  // the 1.0 s settle did not run
+        #expect(seconds(since: start) < 10.0)  // the 30 s settle did not run
     }
 
     @Test("a second jump more than the burst window after the first does not settle")
@@ -305,12 +340,12 @@ struct ForwardWaitMarchRateTests {
             restartActivity: { false },
             activeProducerBase: { 0 },
             decidesForwardWaitByMarchRate: true,
-            marchRateSettleSeconds: 1.0,
+            marchRateSettleSeconds: 30.0,
             marchRateBurstWindowSeconds: 0,  // any earlier jump is outside the window, no sleep needed
             initialRestartIndex: 0,
             repositionWaitSlice: 0.05,
             repositionRideCapSeconds: 5.0,
-            forwardBackpressureWaitSeconds: 0.3
+            forwardBackpressureWaitSeconds: 30.0
         )
         recordSlowMarch(provider, 18...25)
         _ = provider.mediaSegment(at: 25)
@@ -321,7 +356,82 @@ struct ForwardWaitMarchRateTests {
 
         #expect(served != nil)
         #expect(recorder.all == [31, 34])
-        #expect(seconds(since: start) < 0.6)
+        #expect(seconds(since: start) < 10.0)  // the 30 s settle did not run
+    }
+
+    /// Quint review of #933: with the default forward window of 10 on a fast link, the producer spends
+    /// its time parked on backpressure and writes one segment per segment of playback. Read as the link,
+    /// that is 0.25 segments per second, and a jump 60 to 68 s past the playhead (6 to 8 segments past the
+    /// front) restarted a producer that reaches it in about a second. Only unparked intervals measure the link.
+    @Test("on a fast link with the default forward window, a jump just past the front waits for the march",
+          arguments: [36, 38])
+    func fastLinkDefaultWindowWaits(target: Int) {
+        let cache = makeCache(forwardWindow: 10)
+        defer { cache.close() }
+        for i in 11...30 { cache.store(index: i, data: Data(repeating: 0xB1, count: 8)) }
+        let recorder = Recorder()
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 11, initialRestartIndex: 11,
+                                    backpressureWait: 30.0)
+        recordFastLinkPacedByPlayback(provider)
+        _ = provider.mediaSegment(at: 21)  // the playhead, ten segments behind the front
+        parkProducer(cache)  // the window is full
+        // The released march writes up to the target at the link rate.
+        Thread.detachNewThread {
+            for i in 31...target {
+                Thread.sleep(forTimeInterval: 0.02)
+                cache.store(index: i, data: Data(repeating: 0xB2, count: 8))
+            }
+        }
+
+        let served = provider.mediaSegment(at: target)
+
+        #expect(served != nil)
+        #expect(recorder.all.isEmpty)
+    }
+
+    /// While the consumer is paused the producer parks once its window is full, and the last store
+    /// grows old. Counted as time spent writing, a long pause made the next segment look nearly done,
+    /// so a slow march looked fast enough to wait for.
+    @Test("a long pause does not change the decision on a slow march")
+    func longPauseKeepsSlowMarchRestart() {
+        let cache = makeCache()
+        defer { cache.close() }
+        for i in 0...25 { cache.store(index: i, data: Data(repeating: 0xB3, count: 8)) }
+        let recorder = Recorder()
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0,
+                                    backpressureWait: 30.0)
+        recordSlowMarch(provider, 18...25, endingAgo: 120)
+        parkProducer(cache)  // paused for two minutes with the window full
+        _ = provider.mediaSegment(at: 25)
+
+        let served = provider.mediaSegment(at: 31)
+
+        #expect(served != nil)
+        #expect(recorder.all == [31])
+    }
+
+    @Test("a long pause does not change the decision on a fast link")
+    func longPauseKeepsFastLinkWait() {
+        let cache = makeCache(forwardWindow: 10)
+        defer { cache.close() }
+        for i in 11...30 { cache.store(index: i, data: Data(repeating: 0xB4, count: 8)) }
+        let recorder = Recorder()
+        let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 11, initialRestartIndex: 11,
+                                    backpressureWait: 30.0)
+        recordFastLinkPacedByPlayback(provider, endingAgo: 120)
+        parkProducer(cache)
+        _ = provider.mediaSegment(at: 21)
+        Thread.detachNewThread {
+            for i in 31...36 {
+                Thread.sleep(forTimeInterval: 0.02)
+                cache.store(index: i, data: Data(repeating: 0xB5, count: 8))
+            }
+        }
+
+        let served = provider.mediaSegment(at: 36)
+
+        #expect(served != nil)
+        #expect(recorder.all.isEmpty)
     }
 
     @Test("without any march measurement in the session the stock wait is kept")
@@ -343,13 +453,13 @@ struct ForwardWaitMarchRateTests {
     @Test("the march rate is one over the median interval of the active run")
     func trackerCurrentRate() {
         var tracker = MarchRateTracker()
-        // Intervals 4, 4, 30 (a producer park), 4.
+        // Intervals 4, 4, 30 (a stall without a park), 4.
         for (k, time) in [0.0, 4.0, 8.0, 38.0, 42.0].enumerated() {
             tracker.record(index: 10 + k, time: time, bytes: 1000, sourceBytes: nil)
         }
         let estimate = tracker.estimate(activeAnchor: 10)
         #expect(estimate?.source == .current)
-        #expect(abs((estimate?.rate ?? 0) - 0.25) < 1e-9)  // one producer park (30 s) does not count
+        #expect(abs((estimate?.rate ?? 0) - 0.25) < 1e-9)  // one 30 s stall does not count
     }
 
     @Test("below three intervals the active run defers to the previous run, then to throughput")
@@ -368,6 +478,34 @@ struct ForwardWaitMarchRateTests {
         let previous = tracker.estimate(activeAnchor: 40)
         #expect(previous?.source == .previous)
         #expect(abs((previous?.rate ?? 0) - 0.5) < 1e-9)
+    }
+
+    @Test("intervals after a park are not read as the link, for the run or for throughput")
+    func trackerParksCutTheRun() {
+        var tracker = MarchRateTracker()
+        // Unparked fill at 4 segments per second, 10 MB segments, 40 MB/s from the source.
+        for k in 0...9 {
+            tracker.record(index: 11 + k, time: Double(k) * 0.25, bytes: 10_000_000,
+                           sourceBytes: Int64(k) * 10_000_000)
+        }
+        // Then one segment per 4 s, each after a park; the source is idle while parked.
+        for k in 0...9 {
+            tracker.record(index: 21 + k, time: 2.25 + Double(k + 1) * 4, bytes: 10_000_000,
+                           sourceBytes: Int64(10 + k) * 10_000_000, parkedBefore: true)
+        }
+        let estimate = tracker.estimate(activeAnchor: 11)
+        #expect(estimate?.source == .previous)
+        #expect(abs((estimate?.rate ?? 0) - 4.0) < 1e-9)
+
+        // A restart with no run of its own yet falls through to throughput, which skips the parked spans too.
+        var fresh = MarchRateTracker()
+        for k in 0...2 {
+            fresh.record(index: 11 + k, time: Double(k) * 0.25, bytes: 10_000_000, sourceBytes: Int64(k) * 10_000_000)
+        }
+        fresh.record(index: 14, time: 30, bytes: 10_000_000, sourceBytes: 30_000_000, parkedBefore: true)
+        let throughput = fresh.estimate(activeAnchor: 14)
+        #expect(throughput?.source == .throughput)
+        #expect(abs((throughput?.rate ?? 0) - 4.0) < 1e-9)
     }
 
     @Test("a run the new producer has not split off yet is reported as the previous one")

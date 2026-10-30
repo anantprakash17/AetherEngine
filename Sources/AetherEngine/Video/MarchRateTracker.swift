@@ -1,9 +1,13 @@
 import Foundation
 
 /// The producer's march rate in segments per second, from segment completions.
-/// A run is a sequence of consecutive indices, so a restart (which cuts from a new anchor) starts a
-/// new run. The estimate falls back in order: the active run, the previous run, then the source
-/// throughput over the average segment size. nil only when the session has no measurement at all.
+/// A run is a sequence of consecutive indices written without a park, so a restart (which cuts from a
+/// new anchor) and a backpressure park both start a new run. A parked producer writes at the pace the
+/// consumer frees room, which on a fast link is playback speed and not the link: with the default
+/// forward window that read about 0.25 segments per second and restarted a producer that would have
+/// reached the target in a second. The estimate falls back in order: the active run, the previous run,
+/// then the source throughput over the average segment size, cut at parks the same way. nil only when
+/// the session has no measurement at all.
 struct MarchRateTracker {
     struct Sample: Equatable {
         let index: Int
@@ -16,22 +20,30 @@ struct MarchRateTracker {
 
     /// Intervals a run needs before its own rate is trusted (three completed segments after the first).
     static let minimumIntervals = 3
-    /// Newest intervals a rate is read from. The median, so one producer park does not read as a slow link.
+    /// Newest intervals a rate is read from. The median, so one stall does not read as a slow link.
     static let rateWindow = 8
     static let throughputWindow = 8
 
     private(set) var run: [Sample] = []
     private(set) var previousRunRate: Double?
-    /// Newest completions across runs, for the throughput fallback.
+    /// Newest completions across runs since the last park, for the throughput fallback.
     private(set) var recent: [Sample] = []
+    /// The throughput of the span before the last park.
+    private(set) var previousThroughputRate: Double?
 
     var lastSample: Sample? { recent.last }
 
-    mutating func record(index: Int, time: Double, bytes: Int, sourceBytes: Int64?) {
+    /// `parkedBefore`: the producer parked on backpressure since the completion before this one, so the
+    /// interval up to this one is not a measurement of the link.
+    mutating func record(index: Int, time: Double, bytes: Int, sourceBytes: Int64?, parkedBefore: Bool = false) {
         let sample = Sample(index: index, time: time, bytes: bytes, sourceBytes: sourceBytes)
-        if let last = run.last, index != last.index + 1 {
+        if let last = run.last, parkedBefore || index != last.index + 1 {
             if let rate = Self.rate(of: run) { previousRunRate = rate }
             run.removeAll(keepingCapacity: true)
+        }
+        if parkedBefore {
+            if let rate = currentThroughputRate() { previousThroughputRate = rate }
+            recent.removeAll(keepingCapacity: true)
         }
         run.append(sample)
         if run.count > Self.rateWindow + 1 { run.removeFirst(run.count - Self.rateWindow - 1) }
@@ -62,6 +74,10 @@ struct MarchRateTracker {
     }
 
     private func throughputRate() -> Double? {
+        currentThroughputRate() ?? previousThroughputRate
+    }
+
+    private func currentThroughputRate() -> Double? {
         let measured = recent.filter { $0.sourceBytes != nil }
         guard let first = measured.first, let last = measured.last, last.time > first.time,
               let firstBytes = first.sourceBytes, let lastBytes = last.sourceBytes, lastBytes > firstBytes

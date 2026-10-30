@@ -71,8 +71,10 @@ the public-API contract.
   +60 s seek (a restart at the target) resumed in 4 to 5 s. A forward jump now waits only while the measured march
   rate reaches the target sooner than the last measured restart did, and restarts at the target otherwise; the
   segment being written is always waited for, and sequential playback (the next segment, or a retry of the same
-  one) is never treated as a jump. Measured on an Apple TV 4K at about 70 Mbps: +30 s from 39 to 53 s down to 6 to
-  12 s, five +10 s presses from 30 s to 8 s; on a 275 Mbps link nothing changes.
+  one) is never treated as a jump. The rate is read only from segments written without a backpressure park, since a
+  parked producer writes at playback pace and not at the link rate, and a pause does not count as time spent writing.
+  Measured on an Apple TV 4K at about 70 Mbps: +30 s from 39 to 53 s down to 6 to 12 s, five +10 s presses from 30 s
+  to 8 s; on a 275 Mbps link nothing changes.
 - **A jump right after a restart no longer parks on the old march (#932).** Until the restarted producer sealed its first
   segment, the highest sealed index still belonged to the producer before, so a target past it by more than the
   window took the out-of-range restart, and `activeProducerCovers` (reading the new producer's base) vetoed it: the

@@ -1181,8 +1181,8 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
         self.segmentPlacedHandler = segmentPlacedHandler
         self.segmentServedHandler = segmentServedHandler
         if !isLive, decidesForwardWaitByMarchRate {
-            cache.setStoreObserver { [weak self] index, bytes in
-                self?.recordMarchStore(index: index, bytes: bytes)
+            cache.setStoreObserver { [weak self] index, bytes, parked in
+                self?.recordMarchStore(index: index, bytes: bytes, parkedBefore: parked)
             }
         }
     }
@@ -2093,11 +2093,11 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
     static let marchRateDefaultBudgetSeconds = 3.0
 
     /// `time` is uptime seconds; tests pass their own to shape a march without sleeping.
-    func recordMarchStore(index: Int, bytes: Int, time: Double? = nil) {
+    func recordMarchStore(index: Int, bytes: Int, parkedBefore: Bool = false, time: Double? = nil) {
         let now = time ?? Double(DispatchTime.now().uptimeNanoseconds) / 1e9
         let source = sourceBytesFetched?()
         stateLock.lock()
-        _marchTracker.record(index: index, time: now, bytes: bytes, sourceBytes: source)
+        _marchTracker.record(index: index, time: now, bytes: bytes, sourceBytes: source, parkedBefore: parkedBefore)
         stateLock.unlock()
     }
 
@@ -2182,6 +2182,7 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
         }
         let now = Double(DispatchTime.now().uptimeNanoseconds) / 1e9
         let highWater = cache.highestStoredIndex
+        let parkedSinceStore = cache.parkedSinceLastStore
         let restartIndex = lastRestartIndex
         stateLock.lock()
         let estimate = _marchTracker.estimate(activeAnchor: restartIndex)
@@ -2196,7 +2197,9 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
         }
         // Before the active producer's first write it is writing its anchor; after, the next index.
         let writing = highWater >= restartIndex ? highWater + 1 : restartIndex
-        let sinceStore = lastStore.map { $0.index == writing - 1 ? now - $0.time : 0 } ?? 0
+        // A producer parked since its last store has not been writing (a full window, a paused consumer):
+        // the jump just released it, so it starts on the segment now.
+        let sinceStore = parkedSinceStore ? 0 : lastStore.map { $0.index == writing - 1 ? now - $0.time : 0 } ?? 0
         let decision = Self.marchRateRestarts(
             distance: index - writing, rate: estimate.rate,
             secondsSinceLastStore: sinceStore, budgetSeconds: budget)
