@@ -68,6 +68,8 @@ struct MarchRateTracker {
         else { return nil }
         let bytesPerSecond = Double(lastBytes - firstBytes) / (last.time - first.time)
         let averageSegment = Double(measured.map(\.bytes).reduce(0, +)) / Double(measured.count)
+        // Segments written smaller than read (an audio bridge, TrueHD in, E-AC3 out) overestimate the rate,
+        // which leans toward waiting for the march, the stock behaviour, so the error is on the safe side.
         guard averageSegment > 0 else { return nil }
         return bytesPerSecond / averageSegment
     }

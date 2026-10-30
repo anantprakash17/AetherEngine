@@ -999,8 +999,6 @@ final class SegmentCache: @unchecked Sendable {
         return entries.keys.max()
     }
 
-    /// Reset before triggering a restart; previous producer's highWater would keep producerPassedAndPruned
-    /// hot on every fetch, cascading a single restart into a per-segment storm.
     /// See `storeObserver`.
     func setStoreObserver(_ observer: (@Sendable (Int, Int) -> Void)?) {
         condition.lock()
@@ -1008,6 +1006,8 @@ final class SegmentCache: @unchecked Sendable {
         condition.unlock()
     }
 
+    /// Reset before triggering a restart; previous producer's highWater would keep producerPassedAndPruned
+    /// hot on every fetch, cascading a single restart into a per-segment storm.
     func resetHighWaterForRestart() {
         condition.lock()
         defer { condition.unlock() }
