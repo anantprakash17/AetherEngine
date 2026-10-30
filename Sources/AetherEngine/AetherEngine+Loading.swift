@@ -425,6 +425,12 @@ extension AetherEngine {
                 // Feed the playhead mirror the remote-HLS audio tap (#95) reads off its ingest task;
                 // shift 0 on this path, so the rendered position is the source-PTS playhead.
                 self.renderedPositionMirror.set(value)
+                self.refreshRemoteHLSBufferedPosition(rendered: value, ranges: host.loadedVideoRanges)
+            }
+            .store(in: &nativeCancellables)
+        host.$loadedVideoRanges
+            .sink { [weak self] ranges in
+                self?.refreshRemoteHLSBufferedPosition(rendered: host.renderedTime, ranges: ranges)
             }
             .store(in: &nativeCancellables)
         // #168: mirror the item's parsed dynamic range into the published format AND program the panel.
@@ -3036,8 +3042,21 @@ extension AetherEngine {
 extension AetherEngine {
     /// A paused picture does not tick, but the native segment cache can still grow or evict.
     func refreshNativeBufferedPosition() {
-        guard nativeVideoSession != nil, let host = nativeHost else { return }
-        refreshNativeBufferedPosition(playlistSeconds: host.renderedTime)
+        guard let host = nativeHost else { return }
+        if nativeVideoSession != nil {
+            refreshNativeBufferedPosition(playlistSeconds: host.renderedTime)
+        } else if videoRoute == .remoteBypass {
+            refreshRemoteHLSBufferedPosition(rendered: host.renderedTime, ranges: host.loadedVideoRanges)
+        }
+    }
+
+    /// AE#935: no engine cache on the bypass, so the frontier is AVPlayer's own contiguous loaded
+    /// range. Item axis with shift 0, the axis `currentTime` is published on here. Takes the values
+    /// rather than the host because a `@Published` sink runs before the host's property is set.
+    func refreshRemoteHLSBufferedPosition(rendered: Double, ranges: [(Double, Double)]) {
+        let anchor = pendingRecoverySeekClockTarget ?? rendered
+        let end = NativeAVPlayerHost.contiguousBufferedEnd(ranges: ranges, now: anchor)
+        clock.bufferedPosition = max(clock.currentTime, end)
     }
 }
 
