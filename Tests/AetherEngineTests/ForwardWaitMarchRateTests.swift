@@ -39,7 +39,8 @@ struct ForwardWaitMarchRateTests {
     private func makeProvider(cache: SegmentCache, recorder: Recorder, marchRate: Bool = true,
                               producerBase: Int, initialRestartIndex: Int,
                               backpressureWait: TimeInterval = 0.3,
-                              settle: TimeInterval = 0.2) -> VideoSegmentProvider {
+                              settle: TimeInterval = 0.2,
+                              burstWindow: TimeInterval = 1.5) -> VideoSegmentProvider {
         VideoSegmentProvider(
             cache: cache, segments: segments(200), codecsString: "hvc1", supplementalCodecs: nil,
             resolution: (3840, 2160), videoRange: .sdr, frameRate: 24.0, hdcpLevel: nil,
@@ -52,6 +53,7 @@ struct ForwardWaitMarchRateTests {
             activeProducerBase: { producerBase },
             decidesForwardWaitByMarchRate: marchRate,
             marchRateSettleSeconds: settle,
+            marchRateBurstWindowSeconds: burstWindow,
             initialRestartIndex: initialRestartIndex,
             repositionWaitSlice: 0.05,
             repositionRideCapSeconds: 5.0,
@@ -278,9 +280,10 @@ struct ForwardWaitMarchRateTests {
         defer { cache.close() }
         for i in 0...60 { cache.store(index: i, data: Data(repeating: 0xAD, count: 8)) }
         let recorder = Recorder()
-        // The settle outlasts the whole burst, so every later press is still settling when the next arrives.
+        // The settle and the burst window outlast the whole burst, so every later press is still settling
+        // when the next arrives, and a press delayed by a loaded runner still counts as part of the burst.
         let provider = makeProvider(cache: cache, recorder: recorder, producerBase: 0, initialRestartIndex: 0,
-                                    settle: 2.0)
+                                    settle: 2.0, burstWindow: 30.0)
         recordSlowMarch(provider, 53...60)
         _ = provider.mediaSegment(at: 60)
 

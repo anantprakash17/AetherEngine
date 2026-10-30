@@ -21,7 +21,9 @@ the public-API contract.
   one) is never treated as a jump. The rate is read only from segments written without a backpressure park, since a
   parked producer writes at playback pace and not at the link rate, and a pause does not count as time spent writing.
   Measured on an Apple TV 4K at about 70 Mbps: +30 s from 39 to 53 s down to 6 to 12 s, five +10 s presses from 30 s
-  to 8 s; on a 275 Mbps link nothing changes.
+  to 11 s. On a fast link with the default forward window a jump 4 to 8 segments past the front now restarts where it
+  used to wait, because a measured restart costs less than the march's remaining distance; it resumed in 1.1 to 2.1 s
+  with no audible gap and no rebuilt audio bridge.
 - **A jump right after a restart no longer parks on the old march (#932).** Until the restarted producer sealed its first
   segment, the highest sealed index still belonged to the producer before, so a target past it by more than the
   window took the out-of-range restart, and `activeProducerCovers` (reading the new producer's base) vetoed it: the
