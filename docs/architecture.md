@@ -656,6 +656,7 @@ Sources/AetherEngine/
 │   ├── Issue99MuxerFailureRevive.swift      Bounded revive for a VOD pump that died with `muxerFailed` (#99): the first cut firing before any bridged audio reached the muxer (dec3 box) no longer ends the session
 │   ├── SlowServeSignal.swift                One-shot slow-serve timer arming the server's early chunked header (keeps TTFB under AVPlayer's ~3.5 s -12889 window, #93 round 3)
 │   ├── VideoSegmentProvider.swift           Native path: playlist-facing segment provider (live sliding window, restart heuristics, producer-coverage-gated sparse-hole waits #129)
+│   ├── MarchRateTracker.swift               Native path: the producer's march rate from segment completions, cut at restarts and backpressure parks, behind the provider's wait-or-restart decision for a short forward jump (#932)
 │   ├── HLSSegmentProducer.swift             Native path: pump loop reading from Demuxer, feeding MP4SegmentMuxer, cutting fragments keyframe-gated in decode order so the IRAP opens its segment (#92); SSAI program-switch detection + no-cut watchdog
 │   ├── VODSegmentCutter.swift               Native path: decode-order, keyframe-gated VOD segment cutter (the IRAP opens its segment, #92)
 │   ├── PlanBoundaryAxis.swift               Which axis a container stamps its index entries on, and therefore which packet timestamp the cutter gate may compare against a plan boundary: decode for a mov/mp4 sample table, presentation for a Matroska Cue (#358, AE#561)
