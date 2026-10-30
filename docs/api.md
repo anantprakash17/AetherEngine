@@ -744,7 +744,7 @@ Time lives on `player.clock`, a separate `ObservableObject`, so ~10 Hz ticks nev
 | `player.currentTime`, `sourceTime`, `sourceTimeFollowsPicture`, `progress`, `bufferedPosition`, `liveEdgeTime`, `seekableLiveRange`, `behindLiveSeconds`, `isAtLiveEdge` | non-published mirrors of the same values for one-shot reads |
 | `$duration` | seconds; a `LoadOptions.declaredDurationSeconds` outranks the container's |
 
-On native loopback playback, `bufferedPosition` also refreshes while paused as segments arrive or are evicted. It describes the contiguous frontier from the rendered position, not the sum of disconnected cached ranges; this refresh does not advance playback.
+On native loopback playback, `bufferedPosition` also refreshes while paused as segments arrive or are evicted. It describes the contiguous frontier from the rendered position, not the sum of disconnected cached ranges; this refresh does not advance playback. On `.remoteBypass` there is no engine segment cache, so it is the end of AVPlayer's own loaded range contiguous with the playhead (`AVPlayerItem.loadedTimeRanges`), refreshed on every change of those ranges, including while paused (AE#935).
 
 For software VOD, `residentRanges` intersects video presentation coverage with the selected audio
 stream, even if muted; a video-only source does not require audio. H.264/HEVC and VC-1 use verified
