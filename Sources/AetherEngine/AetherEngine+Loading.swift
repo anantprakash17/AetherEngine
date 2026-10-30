@@ -3045,7 +3045,7 @@ extension AetherEngine {
         guard let host = nativeHost else { return }
         if nativeVideoSession != nil {
             refreshNativeBufferedPosition(playlistSeconds: host.renderedTime)
-        } else if videoRoute == .remoteBypass {
+        } else {
             refreshRemoteHLSBufferedPosition(rendered: host.renderedTime, ranges: host.loadedVideoRanges)
         }
     }
@@ -3053,7 +3053,10 @@ extension AetherEngine {
     /// AE#935: no engine cache on the bypass, so the frontier is AVPlayer's own contiguous loaded
     /// range. Item axis with shift 0, the axis `currentTime` is published on here. Takes the values
     /// rather than the host because a `@Published` sink runs before the host's property is set.
+    /// Guarded by route because a reroute to loopback keeps the host and only drops these sinks
+    /// after its first await.
     func refreshRemoteHLSBufferedPosition(rendered: Double, ranges: [(Double, Double)]) {
+        guard videoRoute == .remoteBypass else { return }
         let anchor = pendingRecoverySeekClockTarget ?? rendered
         let end = NativeAVPlayerHost.contiguousBufferedEnd(ranges: ranges, now: anchor)
         clock.bufferedPosition = max(clock.currentTime, end)

@@ -61,5 +61,7 @@ struct Issue935RemoteHLSBufferedPositionTests {
         engine.clock.bufferedPosition = 42
         engine.refreshNativeBufferedPosition()
         #expect(engine.bufferedPosition == 42)
+        engine.refreshRemoteHLSBufferedPosition(rendered: 2, ranges: [(0, 10)])
+        #expect(engine.bufferedPosition == 42)
     }
 }
