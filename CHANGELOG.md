@@ -10,13 +10,24 @@ the public-API contract.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [7.53.1] - 2026-10-31
+
 ### Fixed
 
 - **The engine builds for a tvOS device again under Xcode 27.2 (#846).**
   The tvOS 27.2 SDK marks MetalFX's spatial scaler available from tvOS 27.1, so 7.53.0 failed to compile for
   `appletvos` (the simulator build skips MetalFX and stayed green). The upscale stage now checks for tvOS 27.1
-  before it touches MetalFX; an older tvOS reports no MetalFX support and takes the ML-only rung, as a device
-  without MetalFX already did.
+  before it touches MetalFX; an older tvOS reports no MetalFX support, so the route is not taken there
+  (`metalFXUnsupported`), the same as on a device without MetalFX.
+
+- **The remote-HLS bypass publishes its buffered position (#935).** That route has no engine segment cache, so the
+  shared refresh returned early and `clock.bufferedPosition` stayed at 0 for the whole session, below `currentTime`
+  against its documented contract. It now follows the end of AVPlayer's loaded range contiguous with the playhead
+  (or a pending seek target), on every rendered-time tick and range change, so it also moves while paused. A
+  reroute to loopback no longer lets a late tick overwrite the cache frontier. `aetherctl play --native-hls` on a
+  40 s fMP4 VOD: `buf=0.00` before, `buf=40.00` after, playing, paused and after a seek.
 
 - **A short forward seek on a link near the media bitrate no longer waits for the producer to play the gap in real time (#932).**
   A target 1 to 8 segments past the producer's front always waited for the march (`forwardWaitWindow`), and a march
