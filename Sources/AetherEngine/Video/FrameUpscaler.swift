@@ -563,7 +563,8 @@ private final class Stage {
     private(set) var plan: UpscalePlan
     private let gpu: GPU
     private let ml: MLScaler?
-    private var scaler: MTLFXSpatialScaler?
+    /// The MetalFX spatial scaler, held untyped because the tvOS SDK has it only from 27.1.
+    private var scaler: AnyObject?
     private var rgba: MTLTexture?
     private var scaled: MTLTexture?
     /// Set on the ML-only rung: the output is the coded picture times the ML factor, not square.
@@ -596,7 +597,7 @@ private final class Stage {
             scaler = nil; rgba = nil; scaled = nil
             return
         }
-        guard MTLFXSpatialScalerDescriptor.supportsDevice(gpu.device) else {
+        guard #available(tvOS 27.1, *), MTLFXSpatialScalerDescriptor.supportsDevice(gpu.device) else {
             throw UpscaleError("MetalFX spatial scaling unsupported")
         }
         let d = MTLFXSpatialScalerDescriptor()
@@ -684,7 +685,7 @@ private final class Stage {
         let mlOut = try ml?.process(input, frameIndex: frameIndex, timeout: mlTimeout, submit: submit, times: &times)
         let output: CVPixelBuffer
 
-        if let scaler, let rgba, let scaled {
+        if #available(tvOS 27.1, *), let scaler = scaler as? any MTLFXSpatialScaler, let rgba, let scaled {
             let t0 = DispatchTime.now().uptimeNanoseconds
             output = try makeOutput(format: format, width: plan.targetWidth, height: plan.targetHeight)
             let source = mlOut ?? input

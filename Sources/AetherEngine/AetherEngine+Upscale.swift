@@ -38,8 +38,10 @@ extension AetherEngine {
             osSupportsStage = true
             // The stage is not built for the simulator, which therefore counts as a device without it.
             #if !targetEnvironment(simulator)
-            metalFXSupported = MTLCreateSystemDefaultDevice().map { MTLFXSpatialScalerDescriptor.supportsDevice($0) }
-                ?? false
+            if #available(tvOS 27.1, *) {
+                metalFXSupported = MTLCreateSystemDefaultDevice().map { MTLFXSpatialScalerDescriptor.supportsDevice($0) }
+                    ?? false
+            }
             mlScaleFactors = FrameUpscaler.mlScaleFactors
             #endif
         }

@@ -12,6 +12,12 @@ the public-API contract.
 
 ### Fixed
 
+- **The engine builds for a tvOS device again under Xcode 27.2 (#846).**
+  The tvOS 27.2 SDK marks MetalFX's spatial scaler available from tvOS 27.1, so 7.53.0 failed to compile for
+  `appletvos` (the simulator build skips MetalFX and stayed green). The upscale stage now checks for tvOS 27.1
+  before it touches MetalFX; an older tvOS reports no MetalFX support and takes the ML-only rung, as a device
+  without MetalFX already did.
+
 - **A short forward seek on a link near the media bitrate no longer waits for the producer to play the gap in real time (#932).**
   A target 1 to 8 segments past the producer's front always waited for the march (`forwardWaitWindow`), and a march
   can only advance at the link rate, so a +30 s seek on a 74 Mbps link to a 71.5 Mbps remux took 27 to 34 s while a
